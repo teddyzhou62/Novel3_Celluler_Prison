@@ -1,0 +1,90 @@
+name: translation_one (CN -> Localized EN)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: "Path relative to repo root, e.g. 1.sources/chapter_001.md"
+        required: true
+      out_file:
+        description: "Optional output filename, e.g. chapter_001.md (leave blank to reuse source basename)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: translation-main
+  cancel-in-progress: true
+  
+jobs:
+  translation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "4.QA/scripts/requirements_translation.txt" ]; then
+            pip install -r 4.QA/scripts/requirements_translation.txt
+          else
+            pip install openai pyyaml requests
+          fi
+
+      - name: Run translator (single-layer)
+        env:
+          OPENAI_API_KEY: ${{ secrets.API_KEY }}
+          SRC_PATH: ${{ github.event.inputs.source_file }}
+          OUT_FILE: ${{ github.event.inputs.out_file }}
+        run: |
+          python 4.QA/scripts/translation.py \
+            --src "$SRC_PATH" \
+            --out_dir "3.localized" \
+            --out_file "$OUT_FILE" \
+            --glossary "2.termbases/glossary.csv" \
+            --style "2.termbases/style_guide.md" \
+            --names "2.termbases/name_rules.md" \
+            --cast "2.termbases/cast.yaml" \
+            --world_items "2.termbases/world_items.yaml" \
+            --world_lore "2.termbases/world_lore.md"
+            
+      - name: Debug - show output files
+        run: |
+          echo "=== List 3.localized ==="
+          ls -la 3.localized || true
+          echo "=== Git status ==="
+          git status --porcelain
+          echo "=== Check if 3.localized is ignored ==="
+          git check-ignore -v 3.localized/* || true
+
+      - name: Commit & push localized output
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Always sync with GitHub first to avoid "fetch first" rejection
+          git pull --rebase origin main
+
+          git add "3.localized" || true
+          if git diff -- cached -quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "translation: update localized chapter from ${{ github.event.inputs.source_file }}"
+            git push origin main
+          fi
+
+          git commit -m "translation: update localized chapter from ${{ github.event.inputs.source_file }}"
+          # Step 2: update again in case something changed while this job was running
+          git pull --rebase origin main
+
+          git push origin main
